@@ -1,0 +1,152 @@
+# Default values for springboot.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: nginx
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+app:
+  name: spring-boot-template
+  hostName: demo.dev.freebank.dev
+  version: 0.1.0
+  environment:
+    enabled: true
+    name: experiment
+
+  secrets:
+    enabled: true
+    datasource:
+      enabled: true
+      secretKeyRef: springboot-helloworld-datasource-properties
+    kafka:
+      enabled: true
+      secretKeyRef: springboot-helloworld-kafka-properties
+    redis:
+      enabled: true
+      secretKeyRef: springboot-helloworld-redis-properties
+    sms:
+      enabled: false
+      secretKeyRef: springboot-helloworld-sms-properties
+    sendgrid:
+      enabled: false
+      secretKeyRef: springboot-helloworld-sendgrid-properties
+    gcs:
+      enabled: false
+      secretKeyRef: springboot-helloworld-gcs-properties
+
+namespace:
+  enabled: false
+  name: demo
+
+cloudSqlProxy:
+  enabled: true
+  image: eu.gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.0.0
+  #  Next value if replaced in Cloud Build and value comes from Secret manager.
+  #  Please do not modify value CLOUD_SQL_PROXY_INSTANCES_CONFIG otherwise the replacement will fail and database connectivity will be fail.
+  instances: "CLOUD_SQL_PROXY_INSTANCES_CONFIG"
+  addressType: PUBLIC
+  enableIAMLogin: false
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: "1Gi"
+    requests:
+      cpu: 200m
+      memory: "128Mi"
+
+istio:
+  enabled: false
+
+multiClusterIngress:
+  enabled: false
+
+datadog:
+  enabled: true
+  apiKey: 123
+  tags: type:api,framework:springboot,language:java
+  source: java
+  service: helloworld
+  logsInjectionEnabled: true
+  profilingEnabled: true
+  appsecEnabled: false
+  traceSampleRate: 1
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: false
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: "gsa-wi"
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext:
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+   runAsNonRoot: true
+   runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8080
+  exposeport: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: 100m
+  hosts:
+    - host: demo.dev.freebank.dev
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls:
+    - secretName: spring-boot-hello-demo-tls
+      hosts:
+        - demo.dev.freebank.dev
+
+resources:
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  limits:
+    cpu: 1000m
+    memory: "1Gi"
+  requests:
+    cpu: 500m
+    memory: "256Mi"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+

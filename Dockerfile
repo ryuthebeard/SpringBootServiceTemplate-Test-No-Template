@@ -1,0 +1,8 @@
+FROM alpine:3.17.1 as builder
+RUN apk --update add wget && rm -rf /var/cache/apk/*
+RUN wget -O dd-java-agent.jar 'https://dtdg.co/latest-java-tracer'
+FROM eclipse-temurin:17-alpine
+COPY --from=builder dd-java-agent.jar ./dd-java-agent.jar
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
+ENTRYPOINT ["java","-javaagent:dd-java-agent.jar","-jar","/app.jar"]

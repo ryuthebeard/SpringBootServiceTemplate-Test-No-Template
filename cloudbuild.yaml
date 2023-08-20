@@ -1,0 +1,165 @@
+steps:
+  - name: 'eclipse-temurin:17-jdk-centos7'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        ./mvnw test \
+    id: 'Run Maven Tests'
+  - name: 'eclipse-temurin:17-jdk-centos7'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        ./mvnw sonar:sonar -Dsonar.host.url=$$SONAR_HOST -Dsonar.organization=$$SONAR_ORGANIZATION -Dsonar.login=$$SONAR_TOKEN -Dsonar.branch.name=${BRANCH_NAME} -Dsonar.projectKey=$${SONAR_ORGANIZATION}_${REPO_NAME} -Dsonar.qualitygate.wait=true
+    id: 'Run SonarCloud Quality Gate Tests'
+    secretEnv: [ 'SONAR_TOKEN', 'SONAR_HOST', 'SONAR_ORGANIZATION' ]
+  - name: 'eclipse-temurin:17-jdk-centos7'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        ./mvnw clean verify  -Dmaven.test.skipTests=true -Dmaven.test.skip=true \
+    id: 'Build Maven Package'
+  - id: "Docker Build"
+    name: gcr.io/cloud-builders/docker
+    waitFor:
+      - 'Run SonarCloud Quality Gate Tests'
+      - 'Run Maven Tests'
+      - 'Build Maven Package'
+    entrypoint: /bin/bash
+    args:
+      - -c
+      - |
+        docker build -t ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_REPOSITORY}:${SHORT_SHA} . &&
+        docker image inspect ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_REPOSITORY}:${SHORT_SHA} --format \
+        '{{index .RepoTags 0}}@{{.Id}}' > /workspace/image-digest.txt &&
+        cat /workspace/image-digest.txt
+  - id: "Container Scan"
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: /bin/bash
+    args:
+      - -c
+      - |
+        gcloud artifacts docker images scan ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_REPOSITORY}:${SHORT_SHA}  \
+          --format='value(response.scan)' > /workspace/scan_id.txt
+        cat /workspace/scan_id.txt
+  - id: "Vulnerability Severity Check"
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    waitFor:
+      - 'Container Scan'
+    entrypoint: /bin/bash
+    args:
+      - -c
+      - |
+        apt-get install -y jq
+        sleep 30
+        if [ $(gcloud artifacts docker images list-vulnerabilities $(cat /workspace/scan_id.txt) --format=json | jq '.[] | select(.vulnerability.effectiveSeverity == "CRITICAL" or .vulnerability.effectiveSeverity == "HIGH"  or .vulnerability.effectiveSeverity == "MEDIUM")' | jq -s '. | length') -gt 0 ]; then
+          gcloud artifacts docker images list-vulnerabilities $(cat /workspace/scan_id.txt) --format=json | jq '.[] | select(.vulnerability.effectiveSeverity == "CRITICAL" or .vulnerability.effectiveSeverity == "HIGH"  or .vulnerability.effectiveSeverity == "MEDIUM")' > /workspace/vulnerabilities.json
+          cat /workspace/vulnerabilities.json
+          echo "Failed vulnerability check"
+          exit 1
+        else
+          echo "Passed vulnerability check"
+          exit 0
+        fi
+  - id: 'Push to Artifact Registry'
+    name: gcr.io/cloud-builders/docker
+    waitFor:
+      - "Docker Build"
+      - "Vulnerability Severity Check"
+    entrypoint: /bin/bash
+    args:
+      - -c
+      - |
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_REPOSITORY}:${SHORT_SHA}
+  - id: 'Get Cloud Deploy Config'
+    name: 'gcr.io/cloud-builders/gsutil'
+    args: [
+      'cp',
+      'gs://infra-freebank-test-rd-devops-config/cloud-deploy/springboot/clouddeploy.yaml',
+      'clouddeploy.yaml'
+    ]
+  - id: 'Get Cloud Deploy Skaffold Config'
+    name: 'gcr.io/cloud-builders/gsutil'
+    args: [
+      'cp',
+      'gs://infra-freebank-test-rd-devops-config/cloud-deploy/springboot/skaffold.yaml',
+      'skaffold.yaml'
+    ]
+
+  - id: "Update Delivery Pipeline Name"
+    name: 'gcr.io/cloud-builders/gcloud'
+    waitFor:
+      - 'Get Cloud Deploy Config'
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        sed -i "s|Delivery_Pipeline|${_REPOSITORY}|g" clouddeploy.yaml
+
+  - id: "Update skaffold manifests"
+    name: 'gcr.io/cloud-builders/gcloud'
+    waitFor:
+      - 'Get Cloud Deploy Skaffold Config'
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        sed -i "s|{{.IMAGE_REPO_helloworldapp}}|${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_REPOSITORY}|g" skaffold.yaml
+        sed -i "s|{{.IMAGE_TAG_helloworldapp}}|${SHORT_SHA}|g" skaffold.yaml
+  - id: "Update Helm Values"
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: "bash"
+    secretEnv: ['CLOUD_SQL_PROXY_INSTANCES_CONFIG']
+    args:
+      - "-c"
+      - |
+        sed -i "s|CLOUD_SQL_PROXY_INSTANCES_CONFIG|$$CLOUD_SQL_PROXY_INSTANCES_CONFIG|g" helm/values.yaml
+
+  - id: "Apply Cloud Deploy"
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    waitFor:
+      - 'Push to Artifact Registry'
+      - "Update Helm Values"
+      - "Update Delivery Pipeline Name"
+      - "Update skaffold manifests"
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - >
+        gcloud deploy apply --file clouddeploy.yaml
+        --region=${_REGION}
+        --project=$PROJECT_ID
+  - id: "Create Release"
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    waitFor:
+      - 'Apply Cloud Deploy'
+      - 'Push to Artifact Registry'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - >
+        gcloud deploy releases create release-$BUILD_ID
+        --delivery-pipeline=${_REPOSITORY}
+        --region=${_REGION}
+        --source=.
+        --images=helloworldapp='${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_REPOSITORY}:${SHORT_SHA}'
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_REPOSITORY}:${SHORT_SHA}'
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_NUMBER/secrets/SONAR_ORGANIZATION/versions/latest
+      env: 'SONAR_ORGANIZATION'
+    - versionName: projects/$PROJECT_NUMBER/secrets/SONAR_TOKEN/versions/latest
+      env: 'SONAR_TOKEN'
+    - versionName: projects/$PROJECT_NUMBER/secrets/SONAR_HOST/versions/latest
+      env: 'SONAR_HOST'
+    - versionName: projects/$PROJECT_NUMBER/secrets/CLOUD_SQL_PROXY_INSTANCES_CONFIG/versions/latest
+      env: 'CLOUD_SQL_PROXY_INSTANCES_CONFIG'
+substitutions:
+  _REGION: 'europe-west2'
+  _REPOSITORY: ' '
+
+options:
+  substitution_option: 'ALLOW_LOOSE'

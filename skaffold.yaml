@@ -1,0 +1,23 @@
+apiVersion: skaffold/v2beta28
+kind: Config
+build:
+  artifacts:
+    - image: helloworldapp
+deploy:
+  helm:
+    releases:
+      - name: helloworldapp
+        remoteChart: oci://europe-west2-docker.pkg.dev/infra-freebank-test-rd/freebank-charts/springboot
+        version: 0.1.2
+        valuesFiles:
+          - helm/values.yaml
+        setValueTemplates:
+          image.repository: '{{.IMAGE_REPO_helloworldapp}}'
+          image.tag: '{{.IMAGE_TAG_helloworldapp}}'
+profiles:
+  - name: m1mac
+    build:
+      artifacts:
+        - image: helloworldapp
+          docker:
+            dockerfile: Dockerfile.m1mac

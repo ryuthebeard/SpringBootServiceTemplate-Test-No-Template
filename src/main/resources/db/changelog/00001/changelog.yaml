@@ -1,0 +1,7 @@
+databaseChangeLog:
+  - include:
+      file: db/changelog/00001/00001_01_create_test_table.sql
+  - include:
+      file: db/changelog/00001/00001_02_alter_table_test.sql
+  - include:
+      file: db/changelog/00001/00001_03_alter_table_test.sql
